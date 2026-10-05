@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>極速 EPUB 閱讀器</title>
+  
+  <!-- 核心相依：JSZip 與 ePub.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/epub.js/0.3.93/epub.min.js"></script>
+
+  <style>
+    :root {
+      --bg-color: #f7f7f7;
+      --text-color: #2c3e50;
+      --bar-bg: rgba(255, 255, 255, 0.85);
+      --border-color: rgba(0, 0, 0, 0.08);
+      --accent-color: #007aff;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+    }
+
+    [data-theme="sepia"] {
+      --bg-color: #fbf0d9;
+      --text-color: #5f4b32;
+      --bar-bg: rgba(251, 240, 217, 0.9);
+      --border-color: rgba(95, 75, 50, 0.15);
+      --accent-color: #8c6747;
+    }
+
+    [data-theme="dark"] {
+      --bg-color: #1e1e1e;
+      --text-color: #cccccc;
+      --bar-bg: rgba(30, 30, 30, 0.88);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --accent-color: #0a84ff;
+    }
+
+    [data-theme="black"] {
+      --bg-color: #000000;
+      --text-color: #888888;
+      --bar-bg: rgba(18, 18, 18, 0.92);
+      --border-color: rgba(255, 255, 255, 0.1);
+      --accent-color: #ffffff;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body, html { width: 100%; height: 100%; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang TC", "Noto Sans TC", sans-serif; background-color: var(--bg-color); color: var(--text-color); transition: background-color 0.25s ease; }
+
+    /* 主視圖容器 */
+    #viewer-container { width: 100%; height: 100%; position: relative; }
+    #viewer { width: 100%; height: 100%; }
+
+    /* 頂部導覽列 */
+    header {
+      position: fixed; top: 0; left: 0; right: 0; height: calc(52px + var(--safe-top));
+      padding-top: var(--safe-top); display: flex; align-items: center; justify-content: space-between;
+      padding-left: 16px; padding-right: 16px; background: var(--bar-bg);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border-color); z-index: 100;
+      transform: translateY(0); transition: transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+    }
+    header.hidden { transform: translateY(-100%); }
+
+    /* 底部進度列 */
+    footer {
+      position: fixed; bottom: 0; left: 0; right: 0; height: calc(48px + var(--safe-bottom));
+      padding-bottom: var(--safe-bottom); display: flex; align-items: center; justify-content: space-between;
+      padding-left: 20px; padding-right: 20px; background: var(--bar-bg);
+      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      border-top: 1px solid var(--border-color); z-index: 100; font-size: 13px;
+      transform: translateY(0); transition: transform 0.25s cubic-bezier(0.1, 0.9, 0.2, 1);
+    }
+    footer.hidden { transform: translateY(100%); }
+
+    .btn { background: none; border: none; font-size: 15px; color: var(--text-color); cursor: pointer; padding: 8px 12px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; }
+    .btn:active { background: rgba(0, 0, 0, 0.05); }
+    .book-title { font-size: 14px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50vw; }
+
+    /* 空白狀態上傳區 */
+    #dropzone {
+      position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: var(--bg-color); z-index: 50; text-align: center; padding: 24px;
+    }
+    #dropzone.hidden { display: none; }
+    .upload-box {
+      border: 2px dashed var(--border-color); padding: 40px; border-radius: 20px;
+      max-width: 380px; width: 100%; cursor: pointer; transition: all 0.2s ease;
+    }
+    .upload-box:hover { border-color: var(--accent-color); }
+
+    /* 目錄抽屜 (TOC Drawer) */
+    #drawer {
+      position: fixed; top: 0; bottom: 0; left: 0; width: 320px; max-width: 80vw;
+      background: var(--bar-bg); backdrop-filter: blur(25px); -webkit-backdrop-filter: blur(25px);
+      box-shadow: 4px 0 24px rgba(0,0,0,0.15); transform: translateX(-100%);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); z-index: 200;
+      display: flex; flex-direction: column; padding-top: var(--safe-top);
+    }
+    #drawer.open { transform: translateX(0); }
+    #drawer-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.3); z-index: 199;
+      opacity: 0; pointer-events: none; transition: opacity 0.3s ease;
+    }
+    #drawer-overlay.open { opacity: 1; pointer-events: auto; }
+    .drawer-header { padding: 16px; font-weight: 600; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; }
+    .toc-list { overflow-y: auto; flex: 1; list-style: none; padding: 8px 0; }
+    .toc-item { padding: 12px 20px; font-size: 14px; cursor: pointer; border-bottom: 1px solid var(--border-color); }
+    .toc-item:active { background: rgba(0,0,0,0.05); }
+
+    /* 字級與主題控制浮窗 */
+    #settings-popover {
+      position: fixed; top: calc(56px + var(--safe-top)); right: 16px;
+      background: var(--bar-bg); backdrop-filter: blur(20px); border: 1px solid var(--border-color);
+      border-radius: 14px; box-shadow: 0 10px 30px rgba(0,0,0,0.12); padding: 16px;
+      display: none; flex-direction: column; gap: 14px; z-index: 150; width: 220px;
+    }
+    #settings-popover.show { display: flex; }
+    .setting-row { display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
+    .theme-dots { display: flex; gap: 8px; }
+    .dot { width: 24px; height: 24px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.2); cursor: pointer; }
+    .dot.light { background: #ffffff; }
+    .dot.sepia { background: #fbf0d9; }
+    .dot.dark { background: #1e1e1e; }
+    .dot.black { background: #000000; }
+  </style>
+</head>
+<body data-theme="light">
+
+  <!-- 頂部選單 -->
+  <header id="header">
+    <button class="btn" id="btn-toc" title="目錄">≡ 目錄</button>
+    <div class="book-title" id="book-title">極速閱讀器</div>
+    <div>
+      <button class="btn" id="btn-settings" title="排版設定">Aa</button>
+      <button class="btn" id="btn-reupload" title="換書">⏏</button>
+    </div>
+  </header>
+
+  <!-- 排版設置選單 -->
+  <div id="settings-popover">
+    <div class="setting-row">
+      <span>字級</span>
+      <div>
+        <button class="btn" id="btn-font-dec">A-</button>
+        <button class="btn" id="btn-font-inc">A+</button>
+      </div>
+    </div>
+    <div class="setting-row">
+      <span>主題</span>
+      <div class="theme-dots">
+        <div class="dot light" data-t="light"></div>
+        <div class="dot sepia" data-t="sepia"></div>
+        <div class="dot dark" data-t="dark"></div>
+        <div class="dot black" data-t="black"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 目錄抽屜 -->
+  <div id="drawer-overlay"></div>
+  <div id="drawer">
+    <div class="drawer-header">
+      <span>章節目錄</span>
+      <button class="btn" id="btn-drawer-close">✕</button>
+    </div>
+    <ul class="toc-list" id="toc-list"></ul>
+  </div>
+
+  <!-- 空狀態上傳區 -->
+  <div id="dropzone">
+    <div class="upload-box" id="upload-box">
+      <h3 style="margin-bottom: 8px;">開啟 EPUB 電子書</h3>
+      <p style="font-size: 13px; opacity: 0.7;">點擊此處或拖曳書籍檔案至此</p>
+      <input type="file" id="file-input" accept=".epub" style="display: none;">
+    </div>
+  </div>
+
+  <!-- 閱讀核心畫布 -->
+  <div id="viewer-container">
+    <div id="viewer"></div>
+  </div>
+
+  <!-- 底部翻頁進度條 -->
+  <footer id="footer">
+    <button class="btn" id="btn-prev">‹ 上一頁</button>
+    <span id="chapter-title" style="opacity: 0.75; font-size: 12px; max-width: 45vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">載入中...</span>
+    <button class="btn" id="btn-next">下一頁 ›</button>
+  </footer>
+
+  <script>
+    /* ================= 1. 本地極速 IndexedDB 工具 ================= */
+    const DB_NAME = 'fast_epub_db';
+    const STORE_NAME = 'books_store';
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 1);
+        req.onupgradeneeded = () => req.result.createObjectStore(STORE_NAME);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function dbSet(key, val) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readwrite');
+        tx.objectStore(STORE_NAME).put(val, key);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function dbGet(key) {
+      const db = await openDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE_NAME, 'readonly');
+        const req = tx.objectStore(STORE_NAME).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    /* ================= 2. 閱讀器狀態管理 ================= */
+    let currentBook = null;
+    let rendition = null;
+    let currentTheme = localStorage.getItem('theme') || 'light';
+    let currentFontSize = parseInt(localStorage.getItem('fontSize') || '100', 10);
+    let isUIVisible = true;
+
+    // DOM 元素快取
+    const header = document.getElementById('header');
+    const footer = document.getElementById('footer');
+    const dropzone = document.getElementById('dropzone');
+    const fileInput = document.getElementById('file-input');
+    const bookTitle = document.getElementById('book-title');
+    const chapterTitle = document.getElementById('chapter-title');
+    const drawer = document.getElementById('drawer');
+    const drawerOverlay = document.getElementById('drawer-overlay');
+    const tocList = document.getElementById('toc-list');
+    const settingsPopover = document.getElementById('settings-popover');
+
+    /* ================= 3. 核心初始化與書籍加載 ================= */
+    window.addEventListener('DOMContentLoaded', async () => {
+      applyTheme(currentTheme);
+
+      // 自動檢查本地是否有暫存書本
+      const savedBookData = await dbGet('cached_book_file');
+      const savedBookName = await dbGet('cached_book_name');
+      const lastCfi = localStorage.getItem('last_cfi');
+
+      if (savedBookData) {
+        renderBook(savedBookData, savedBookName, lastCfi);
+      }
+    });
+
+    function toggleUI(forceState) {
+      isUIVisible = forceState !== undefined ? forceState : !isUIVisible;
+      header.classList.toggle('hidden', !isUIVisible);
+      footer.classList.toggle('hidden', !isUIVisible);
+      if (!isUIVisible) settingsPopover.classList.remove('show');
+    }
+
+    async function renderBook(bookData, fileName, initialCfi) {
+      dropzone.classList.add('hidden');
+      bookTitle.innerText = fileName.replace(/\.epub$/i, '');
+
+      if (currentBook) {
+        try { currentBook.destroy(); } catch (e) {}
+      }
+
+      currentBook = ePub(bookData);
+      
+      // 關鍵優化：自適應單雙頁排版
+      rendition = currentBook.renderTo('viewer', {
+        width: '100%',
+        height: '100%',
+        spread: 'auto',
+        flow: 'paginated'
+      });
+
+      // 套用自訂 CSS 與主題
+      applyRenditionStyles();
+
+      // 載入章節
+      await rendition.display(initialCfi || undefined);
+
+      // 載入目錄
+      const toc = await currentBook.loaded.navigation;
+      buildTOC(toc.toc);
+
+      // 翻頁位置變化監聽（紀錄進度）
+      rendition.on('relocated', location => {
+        if (!location || !location.start) return;
+        localStorage.setItem('last_cfi', location.start.cfi);
+        
+        // 更新章節標題
+        const currentChapter = toc.get(location.start.href);
+        if (currentChapter && currentChapter.label) {
+          chapterTitle.innerText = currentChapter.label.trim();
+        } else {
+          chapterTitle.innerText = `章節 ${location.start.index + 1}`;
+        }
+      });
+
+      // 綁定 iframe 內部的點擊與手勢（極致流暢的核心關鍵）
+      rendition.on('rendered', (section, view) => {
+        bindIframeEvents(view.document);
+      });
+    }
+
+    /* ================= 4. 穿透 Iframe 的觸控與鍵盤事件 ================= */
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    function bindIframeEvents(doc) {
+      // 桌面鍵盤支援
+      doc.addEventListener('keydown', handleKeyDown);
+      
+      // 移動端滑動支援 (Swipe)
+      doc.addEventListener('touchstart', e => {
+        touchStartX = e.changedTouches[0].clientX;
+        touchStartY = e.changedTouches[0].clientY;
+      }, { passive: true });
+
+      doc.addEventListener('touchend', e => {
+        const deltaX = e.changedTouches[0].clientX - touchStartX;
+        const deltaY = e.changedTouches[0].clientY - touchStartY;
+
+        // 水平滑動幅度大於 40px 且垂直位移小於 30px
+        if (Math.abs(deltaX) > 40 && Math.abs(deltaY) < 30) {
+          if (deltaX < 0) rendition.next();
+          else rendition.prev();
+        }
+      });
+
+      // 點擊區域區隔：左 25% 上一頁，右 25% 下一頁，中 50% 喚出工具列
+      doc.addEventListener('click', e => {
+        const width = doc.documentElement.clientWidth;
+        const clickX = e.clientX;
+
+        if (clickX < width * 0.25) {
+          rendition.prev();
+        } else if (clickX > width * 0.75) {
+          rendition.next();
+        } else {
+          toggleUI();
+        }
+      });
+    }
+
+    function handleKeyDown(e) {
+      if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'j') {
+        rendition?.next();
+      } else if (e.key === 'ArrowLeft' || e.key === 'k') {
+        rendition?.prev();
+      } else if (e.key === 'Escape') {
+        closeDrawer();
+        toggleUI(false);
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+
+    /* ================= 5. 主題與字體即時切換 ================= */
+    function applyTheme(theme) {
+      currentTheme = theme;
+      document.body.setAttribute('data-theme', theme);
+      localStorage.setItem('theme', theme);
+      if (rendition) applyRenditionStyles();
+    }
+
+    function applyRenditionStyles() {
+      if (!rendition) return;
+      const themeColors = {
+        light: { bg: '#f7f7f7', text: '#2c3e50' },
+        sepia: { bg: '#fbf0d9', text: '#5f4b32' },
+        dark: { bg: '#1e1e1e', text: '#cccccc' },
+        black: { bg: '#000000', text: '#888888' }
+      }[currentTheme];
+
+      rendition.themes.default({
+        'body': {
+          'background': `${themeColors.bg} !important`,
+          'color': `${themeColors.text} !important`,
+          'font-size': `${currentFontSize}% !important`,
+          'line-height': '1.75 !important',
+          'padding': '0 4% !important'
+        }
+      });
+    }
+
+    /* ================= 6. 目錄建構 ================= */
+    function buildTOC(tocItems) {
+      tocList.innerHTML = '';
+      tocItems.forEach(item => {
+        const li = document.createElement('li');
+        li.className = 'toc-item';
+        li.innerText = item.label.trim();
+        li.addEventListener('click', () => {
+          rendition.display(item.href);
+          closeDrawer();
+        });
+        tocList.appendChild(li);
+      });
+    }
+
+    function closeDrawer() {
+      drawer.classList.remove('open');
+      drawerOverlay.classList.remove('open');
+    }
+
+    /* ================= 7. 綁定按鈕與檔案上傳事件 ================= */
+    document.getElementById('upload-box').addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const buffer = await file.arrayBuffer();
+      await dbSet('cached_book_file', buffer);
+      await dbSet('cached_book_name', file.name);
+      localStorage.removeItem('last_cfi');
+
+      renderBook(buffer, file.name);
+    });
+
+    // 拖曳上傳支援
+    window.addEventListener('dragover', e => e.preventDefault());
+    window.addEventListener('drop', async e => {
+      e.preventDefault();
+      const file = e.dataTransfer.files[0];
+      if (file && file.name.endsWith('.epub')) {
+        const buffer = await file.arrayBuffer();
+        await dbSet('cached_book_file', buffer);
+        await dbSet('cached_book_name', file.name);
+        localStorage.removeItem('last_cfi');
+        renderBook(buffer, file.name);
+      }
+    });
+
+    document.getElementById('btn-prev').addEventListener('click', () => rendition?.prev());
+    document.getElementById('btn-next').addEventListener('click', () => rendition?.next());
+    document.getElementById('btn-toc').addEventListener('click', () => {
+      drawer.classList.add('open');
+      drawerOverlay.classList.add('open');
+    });
+    document.getElementById('btn-drawer-close').addEventListener('click', closeDrawer);
+    drawerOverlay.addEventListener('click', closeDrawer);
+
+    document.getElementById('btn-settings').addEventListener('click', () => {
+      settingsPopover.classList.toggle('show');
+    });
+
+    document.getElementById('btn-font-inc').addEventListener('click', () => {
+      currentFontSize += 10;
+      localStorage.setItem('fontSize', currentFontSize);
+      applyRenditionStyles();
+    });
+
+    document.getElementById('btn-font-dec').addEventListener('click', () => {
+      if (currentFontSize > 60) {
+        currentFontSize -= 10;
+        localStorage.setItem('fontSize', currentFontSize);
+        applyRenditionStyles();
+      }
+    });
+
+    document.querySelectorAll('.dot').forEach(el => {
+      el.addEventListener('click', (e) => {
+        applyTheme(e.target.dataset.t);
+      });
+    });
+
+    document.getElementById('btn-reupload').addEventListener('click', () => {
+      fileInput.click();
+    });
+  </script>
+</body>
+</html>
